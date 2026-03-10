@@ -5,44 +5,124 @@
     <title>Infra Monitoring Dashboard</title>
     <style>
       body { font-family: system-ui, sans-serif; background: #0f172a; color: #e5e7eb; padding: 1.5rem; }
-      .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+      h1 { font-size: 1.8rem; margin-bottom: 1rem; }
+      .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
       .card { background: #1f2937; border-radius: 0.75rem; padding: 1rem 1.25rem; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
-      .title { font-size: 1.2rem; margin-bottom: 0.5rem; font-weight: 600; }
+      .title { font-size: 1.1rem; margin-bottom: 0.5rem; font-weight: 600; }
       .metric { font-size: 1.5rem; font-weight: 700; }
       .badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 999px; font-size: 0.75rem; }
       .badge-ok { background: #064e3b; color: #bbf7d0; }
       .badge-bad { background: #7f1d1d; color: #fecaca; }
+      #topology-svg { width: 100%; height: 260px; background: #020617; border-radius: 0.5rem; }
+      ul { padding-left: 1.1rem; }
     </style>
+
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- D3.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
   </head>
   <body>
     <h1>Infra Monitoring Dashboard</h1>
     <div class="grid">
-      <div class="card" id="system-card">
-        <div class="title">System Metrics</div>
+      <div class="card">
+        <div class="title">System Metrics (Current)</div>
         <div>CPU: <span id="cpu" class="metric">-</span>%</div>
         <div>Memory: <span id="mem" class="metric">-</span>%</div>
         <div>Disk: <span id="disk" class="metric">-</span>%</div>
       </div>
+
+      <div class="card">
+        <div class="title">System Metrics (Last 60s)</div>
+        <canvas id="systemChart" height="180"></canvas>
+      </div>
+
       <div class="card">
         <div class="title">Services</div>
         <div id="services"></div>
       </div>
+
+      <div class="card">
+        <div class="title">Service Latency (ms)</div>
+        <canvas id="latencyChart" height="180"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="title">Service Topology</div>
+        <svg id="topology-svg"></svg>
+      </div>
+
       <div class="card">
         <div class="title">Alerts</div>
         <ul id="alerts"></ul>
-      </div>
-      <div class="card">
-        <div class="title">Service Topology</div>
-        <pre id="topology"></pre>
       </div>
     </div>
 
     <script>
       const API_BASE = "http://localhost:8000";
+      const POLL_INTERVAL_MS = 3000;
+      const MAX_POINTS = 20;
 
       async function fetchJSON(path) {
         const res = await fetch(`${API_BASE}${path}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
+      }
+
+      // --- State for charts ---
+      const systemHistory = {
+        labels: [],
+        cpu: [],
+        mem: [],
+        disk: []
+      };
+
+      const latencyHistory = {
+        labels: [],
+        seriesByService: {} // { serviceName: [latencies...] }
+      };
+
+      let systemChart;
+      let latencyChart;
+
+      // --- Init charts ---
+      function initCharts() {
+        const ctxSys = document.getElementById("systemChart").getContext("2d");
+        systemChart = new Chart(ctxSys, {
+          type: "line",
+          data: {
+            labels: systemHistory.labels,
+            datasets: [
+              { label: "CPU %", data: systemHistory.cpu, borderColor: "#f97316", tension: 0.3 },
+              { label: "Memory %", data: systemHistory.mem, borderColor: "#22c55e", tension: 0.3 },
+              { label: "Disk %", data: systemHistory.disk, borderColor: "#3b82f6", tension: 0.3 }
+            ]
+          },
+          options: {
+            scales: { y: { beginAtZero: true, max: 100 } },
+            plugins: { legend: { labels: { color: "#e5e7eb" } } },
+            color: "#e5e7eb"
+          }
+        });
+
+        const ctxLat = document.getElementById("latencyChart").getContext("2d");
+        latencyChart = new Chart(ctxLat, {
+          type: "line",
+          data: {
+            labels: latencyHistory.labels,
+            datasets: []
+          },
+          options: {
+            scales: { y: { beginAtZero: true } },
+            plugins: { legend: { labels: { color: "#e5e7eb" } } },
+            color: "#e5e7eb"
+          }
+        });
+      }
+
+      function pushWithLimit(arr, value) {
+        arr.push(value);
+        if (arr.length > MAX_POINTS) arr.shift();
       }
 
       async function refreshSystem() {
@@ -50,13 +130,26 @@
         document.getElementById("cpu").textContent = data.cpu_percent.toFixed(1);
         document.getElementById("mem").textContent = data.memory_percent.toFixed(1);
         document.getElementById("disk").textContent = data.disk_percent.toFixed(1);
+
+        const label = new Date().toLocaleTimeString();
+        pushWithLimit(systemHistory.labels, label);
+        pushWithLimit(systemHistory.cpu, data.cpu_percent);
+        pushWithLimit(systemHistory.mem, data.memory_percent);
+        pushWithLimit(systemHistory.disk, data.disk_percent);
+
+        systemChart.update();
       }
 
-      async function refreshServices() {
+      async function refreshServicesAndLatency() {
         const data = await fetchJSON("/metrics/services");
         const container = document.getElementById("services");
         container.innerHTML = "";
+
+        const label = new Date().toLocaleTimeString();
+        pushWithLimit(latencyHistory.labels, label);
+
         data.forEach(svc => {
+          // Services list
           const div = document.createElement("div");
           div.innerHTML = `
             <span>${svc.name}</span>
@@ -66,7 +159,28 @@
             <span style="margin-left:0.5rem">${svc.latency_ms.toFixed(0)} ms</span>
           `;
           container.appendChild(div);
+
+          // Latency history
+          if (!latencyHistory.seriesByService[svc.name]) {
+            latencyHistory.seriesByService[svc.name] = [];
+          }
+          pushWithLimit(latencyHistory.seriesByService[svc.name], svc.latency_ms);
         });
+
+        // Rebuild latency datasets
+        latencyChart.data.labels = latencyHistory.labels;
+        latencyChart.data.datasets = Object.entries(latencyHistory.seriesByService).map(
+          ([name, values], idx) => {
+            const colors = ["#22c55e", "#3b82f6", "#f97316", "#eab308", "#ec4899"];
+            return {
+              label: name,
+              data: values,
+              borderColor: colors[idx % colors.length],
+              tension: 0.3
+            };
+          }
+        );
+        latencyChart.update();
       }
 
       async function refreshAlerts() {
@@ -80,37 +194,115 @@
         });
       }
 
-      async function tick() {
-        await Promise.all([refreshSystem(), refreshServices(), refreshAlerts()]);
+      // --- Topology with D3 force layout ---
+      function renderTopology(graph) {
+        const svg = d3.select("#topology-svg");
+        svg.selectAll("*").remove();
+        const width = svg.node().clientWidth || 300;
+        const height = svg.node().clientHeight || 260;
+
+        const simulation = d3.forceSimulation(graph.nodes)
+          .force("link", d3.forceLink(graph.edges).id(d => d.id).distance(80))
+          .force("charge", d3.forceManyBody().strength(-250))
+          .force("center", d3.forceCenter(width / 2, height / 2));
+
+        const link = svg.append("g")
+          .attr("stroke", "#4b5563")
+          .attr("stroke-width", 1.5)
+          .selectAll("line")
+          .data(graph.edges)
+          .enter()
+          .append("line");
+
+        const node = svg.append("g")
+          .selectAll("circle")
+          .data(graph.nodes)
+          .enter()
+          .append("circle")
+          .attr("r", 14)
+          .attr("fill", "#22c55e")
+          .call(drag(simulation));
+
+        const labels = svg.append("g")
+          .selectAll("text")
+          .data(graph.nodes)
+          .enter()
+          .append("text")
+          .attr("fill", "#e5e7eb")
+          .attr("font-size", 10)
+          .attr("text-anchor", "middle")
+          .attr("dy", -18)
+          .text(d => d.label);
+
+        simulation.on("tick", () => {
+          link
+            .attr("x1", d => d.source.x)
+            .attr("y1", d => d.source.y)
+            .attr("x2", d => d.target.x)
+            .attr("y2", d => d.target.y);
+
+          node
+            .attr("cx", d => d.x)
+            .attr("cy", d => d.y);
+
+          labels
+            .attr("x", d => d.x)
+            .attr("y", d => d.y);
+        });
+
+        function drag(sim) {
+          function dragstarted(event, d) {
+            if (!event.active) sim.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+          }
+
+          function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+          }
+
+          function dragended(event, d) {
+            if (!event.active) sim.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+          }
+
+          return d3.drag()
+            .on("start", dragstarted)
+            .on("drag", dragged)
+            .on("end", dragended);
+        }
       }
 
-      setInterval(tick, 3000);
-      tick();
-
-      const API_BASE = "http://localhost:8000";
-      async function fetchJSON(path) {
-        const res = await fetch(`${API_BASE}${path}`);
-        return res.json();
-      }
-      // ... existing refresh functions ...
       async function refreshTopology() {
         const data = await fetchJSON("/services/graph");
-        const lines = [];
-        data.edges.forEach(edge => {
-          lines.push(`${edge.from_id} -> ${edge.to_id}`);
-        });
-        document.getElementById("topology").textContent = lines.join("\n");
+        // D3 wants edges as {source, target}
+        const graph = {
+          nodes: data.nodes,
+          edges: data.edges.map(e => ({ source: e.from_id, target: e.to_id }))
+        };
+        renderTopology(graph);
       }
+
       async function tick() {
-        await Promise.all([
-          refreshSystem(),
-          refreshServices(),
-          refreshAlerts(),
-          refreshTopology(),
-        ]);
+        try {
+          await Promise.all([
+            refreshSystem(),
+            refreshServicesAndLatency(),
+            refreshAlerts(),
+            refreshTopology()
+          ]);
+        } catch (err) {
+          console.error("Poll error", err);
+        }
       }
-      setInterval(tick, 3000);
-      tick();
+
+      window.addEventListener("load", () => {
+        initCharts();
+        tick();
+        setInterval(tick, POLL_INTERVAL_MS);
+      });
     </script>
   </body>
 </html>

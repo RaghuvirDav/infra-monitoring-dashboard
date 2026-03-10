@@ -1,0 +1,7 @@
+{
+  "services": [
+    { "name": "user-api", "url": "http://user-api.local/health" },
+    { "name": "auth-service", "url": "http://auth-service.local/health" },
+    { "name": "payments-service", "url": "http://payments.local/health" }
+  ]
+}

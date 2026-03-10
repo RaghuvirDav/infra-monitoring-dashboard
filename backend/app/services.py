@@ -1,16 +1,26 @@
+import json
 import time
+from pathlib import Path
 from typing import Dict, List
-from .models import ServiceGraph, ServiceNode, ServiceEdge
 
 import httpx
 
-from .models import ServiceStatus
+from .models import ServiceStatus, ServiceGraph, ServiceNode, ServiceEdge
 
-# Example services to monitor (expand later / load from config)
-MONITORED_SERVICES: Dict[str, str] = {
-    "user-api": "http://user-api.local/health",
-    "auth-service": "http://auth-service.local/health",
-}
+CONFIG_PATH = Path(__file__).resolve().parent / "services.json"
+
+
+def load_services_from_config() -> Dict[str, str]:
+    if not CONFIG_PATH.exists():
+        return {}
+    data = json.loads(CONFIG_PATH.read_text())
+    services: Dict[str, str] = {}
+    for svc in data.get("services", []):
+        services[svc["name"]] = svc["url"]
+    return services
+
+
+MONITORED_SERVICES: Dict[str, str] = load_services_from_config()
 
 
 async def check_service(name: str, url: str) -> ServiceStatus:
@@ -46,22 +56,20 @@ async def get_all_service_statuses() -> List[ServiceStatus]:
     return results
 
 
-
-# Example dependency map:
-# user-api -> auth-service -> database
-#            \-> email-service
 def get_service_graph() -> ServiceGraph:
+    # Simple example graph; you can evolve this or derive from config
     nodes = [
+        ServiceNode(id="api-gateway", label="API Gateway"),
         ServiceNode(id="user-api", label="User API"),
         ServiceNode(id="auth-service", label="Auth Service"),
+        ServiceNode(id="payments-service", label="Payments Service"),
         ServiceNode(id="database", label="Database"),
-        ServiceNode(id="email-service", label="Email Service"),
-        ServiceNode(id="api-gateway", label="API Gateway"),
     ]
     edges = [
         ServiceEdge(from_id="api-gateway", to_id="user-api"),
         ServiceEdge(from_id="user-api", to_id="auth-service"),
         ServiceEdge(from_id="auth-service", to_id="database"),
-        ServiceEdge(from_id="auth-service", to_id="email-service"),
+        ServiceEdge(from_id="user-api", to_id="payments-service"),
+        ServiceEdge(from_id="payments-service", to_id="database"),
     ]
     return ServiceGraph(nodes=nodes, edges=edges)
