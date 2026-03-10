@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Infra Monitoring Dashboard</title>
+    <style>
+      body { font-family: system-ui, sans-serif; background: #0f172a; color: #e5e7eb; padding: 1.5rem; }
+      .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+      .card { background: #1f2937; border-radius: 0.75rem; padding: 1rem 1.25rem; box-shadow: 0 10px 30px rgba(0,0,0,0.4); }
+      .title { font-size: 1.2rem; margin-bottom: 0.5rem; font-weight: 600; }
+      .metric { font-size: 1.5rem; font-weight: 700; }
+      .badge { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 999px; font-size: 0.75rem; }
+      .badge-ok { background: #064e3b; color: #bbf7d0; }
+      .badge-bad { background: #7f1d1d; color: #fecaca; }
+    </style>
+  </head>
+  <body>
+    <h1>Infra Monitoring Dashboard</h1>
+    <div class="grid">
+      <div class="card" id="system-card">
+        <div class="title">System Metrics</div>
+        <div>CPU: <span id="cpu" class="metric">-</span>%</div>
+        <div>Memory: <span id="mem" class="metric">-</span>%</div>
+        <div>Disk: <span id="disk" class="metric">-</span>%</div>
+      </div>
+      <div class="card">
+        <div class="title">Services</div>
+        <div id="services"></div>
+      </div>
+      <div class="card">
+        <div class="title">Alerts</div>
+        <ul id="alerts"></ul>
+      </div>
+      <div class="card">
+        <div class="title">Service Topology</div>
+        <pre id="topology"></pre>
+      </div>
+    </div>
+
+    <script>
+      const API_BASE = "http://localhost:8000";
+
+      async function fetchJSON(path) {
+        const res = await fetch(`${API_BASE}${path}`);
+        return res.json();
+      }
+
+      async function refreshSystem() {
+        const data = await fetchJSON("/metrics/system");
+        document.getElementById("cpu").textContent = data.cpu_percent.toFixed(1);
+        document.getElementById("mem").textContent = data.memory_percent.toFixed(1);
+        document.getElementById("disk").textContent = data.disk_percent.toFixed(1);
+      }
+
+      async function refreshServices() {
+        const data = await fetchJSON("/metrics/services");
+        const container = document.getElementById("services");
+        container.innerHTML = "";
+        data.forEach(svc => {
+          const div = document.createElement("div");
+          div.innerHTML = `
+            <span>${svc.name}</span>
+            <span class="badge ${svc.healthy ? "badge-ok" : "badge-bad"}">
+              ${svc.healthy ? "OK" : "DOWN"}
+            </span>
+            <span style="margin-left:0.5rem">${svc.latency_ms.toFixed(0)} ms</span>
+          `;
+          container.appendChild(div);
+        });
+      }
+
+      async function refreshAlerts() {
+        const data = await fetchJSON("/alerts");
+        const list = document.getElementById("alerts");
+        list.innerHTML = "";
+        data.slice(-20).reverse().forEach(alert => {
+          const li = document.createElement("li");
+          li.textContent = `[${alert.level.toUpperCase()}] ${alert.message}`;
+          list.appendChild(li);
+        });
+      }
+
+      async function tick() {
+        await Promise.all([refreshSystem(), refreshServices(), refreshAlerts()]);
+      }
+
+      setInterval(tick, 3000);
+      tick();
+
+      const API_BASE = "http://localhost:8000";
+      async function fetchJSON(path) {
+        const res = await fetch(`${API_BASE}${path}`);
+        return res.json();
+      }
+      // ... existing refresh functions ...
+      async function refreshTopology() {
+        const data = await fetchJSON("/services/graph");
+        const lines = [];
+        data.edges.forEach(edge => {
+          lines.push(`${edge.from_id} -> ${edge.to_id}`);
+        });
+        document.getElementById("topology").textContent = lines.join("\n");
+      }
+      async function tick() {
+        await Promise.all([
+          refreshSystem(),
+          refreshServices(),
+          refreshAlerts(),
+          refreshTopology(),
+        ]);
+      }
+      setInterval(tick, 3000);
+      tick();
+    </script>
+  </body>
+</html>

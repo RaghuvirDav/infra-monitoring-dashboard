@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+psutil
+prometheus-client
+httpx
+pydantic
